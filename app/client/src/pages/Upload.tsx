@@ -10,8 +10,10 @@ import { SpectrogramViewer } from '@/components/SpectrogramViewer';
 import { HealthStatusCard } from '@/components/HealthStatusCard';
 import { Badge } from '@/components/ui/badge';
 import { Upload as UploadIcon, Play, Pause, Download, RotateCcw } from 'lucide-react';
+import { useSites } from "@/contexts/SitesContext";
 
 export default function Upload() {
+  const { addSite } = useSites();
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [selectedSite, setSelectedSite] = useState('');
   const [notes, setNotes] = useState('');
@@ -40,6 +42,54 @@ export default function Upload() {
     setPredictionResult(null);
   };
 
+  const handleFileUpload = async (file: File) => {
+    if (!file) return;
+    
+    setIsUploading(true);
+    setPredictionResult(null);
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      // Make API call to FastAPI backend
+      const response = await fetch('http://127.0.0.1:8000/predict', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+      }
+      
+      const result = await response.json();
+      
+      // Ensure the response matches our expected format
+      if (!result.success) {
+        throw new Error(result.detail || 'Prediction failed');
+      }
+      
+      console.log('API Response:', result);
+      setPredictionResult(result);
+      
+      // Save to sites context for the map
+      addSite({
+        name: selectedSite || 'Unnamed Site',
+        lat: -20.0, // Default latitude, you might want to get this from the form
+        lng: 140.0, // Default longitude, you might want to get this from the form
+        lastHealth: result.prediction.health_status,
+        lastConfidence: result.prediction.confidence * 100,
+      });
+      
+    } catch (error) {
+      console.error('Upload failed:', error);
+      alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -53,47 +103,7 @@ export default function Upload() {
       return;
     }
 
-    setIsUploading(true);
-    
-    // TODO: remove mock functionality
-    // Simulate API call to /predict endpoint
-    try {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      const mockResult = {
-        success: true,
-        prediction: {
-          health_status: Math.random() > 0.5 ? 'healthy' : 'stressed',
-          confidence: Math.random() * 40 + 60, // 60-100%
-          confidence_percentage: Math.random() * 40 + 60
-        },
-        file_info: {
-          filename: selectedFiles[0].name,
-          size_bytes: selectedFiles[0].size,
-          duration_seconds: Math.random() * 120 + 30, // 30-150 seconds
-          sample_rate: 44100
-        },
-        processing: {
-          processing_time_seconds: Math.random() * 5 + 2,
-          model_used: 'SurfPerch-v2.1',
-          timestamp: new Date().toISOString()
-        },
-        acoustic_features: {
-          spectral_centroid_hz: Math.random() * 2000 + 1000,
-          spectral_bandwidth_hz: Math.random() * 1000 + 500,
-          zero_crossing_rate: Math.random() * 0.1
-        }
-      };
-
-      setPredictionResult(mockResult);
-      console.log('Prediction result:', mockResult);
-      
-    } catch (error) {
-      console.error('Upload failed:', error);
-      alert('Upload failed. Please try again.');
-    } finally {
-      setIsUploading(false);
-    }
+    await handleFileUpload(selectedFiles[0]);
   };
 
   const handleRetry = () => {
@@ -279,7 +289,7 @@ export default function Upload() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <HealthStatusCard
               status={predictionResult.prediction.health_status}
-              confidence={predictionResult.prediction.confidence}
+              confidence={predictionResult.prediction.confidence * 100}  // Convert to percentage
               filename={predictionResult.file_info.filename}
               site={selectedSite}
               timestamp={predictionResult.processing.timestamp}

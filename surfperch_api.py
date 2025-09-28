@@ -35,10 +35,14 @@ app = FastAPI(
 # Add CORS middleware for frontend connection
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your domain
+    allow_origins=[
+        "http://localhost:3001",  # React dev server
+        "http://127.0.0.1:3001",  # Alternative localhost
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Global variables for model and data
@@ -256,63 +260,53 @@ async def predict_reef_health(file: UploadFile = File(...)):
     start_time = time.time()
     
     try:
-        # Read uploaded file
-        audio_data = await file.read()
-        logger.info(f"Processing file: {file.filename} ({len(audio_data)} bytes)")
+        # Save the uploaded file temporarily
+        file_contents = await file.read()
+        logger.info(f"Processing file: {file.filename} ({len(file_contents)} bytes)")
         
-        # Load audio with librosa
-        audio, sr = librosa.load(io.BytesIO(audio_data), sr=16000, duration=5.0)
-        
-        if len(audio) == 0:
-            raise HTTPException(status_code=400, detail="Could not load audio data")
+        # Convert to audio data
+        audio, sr = librosa.load(io.BytesIO(file_contents), sr=None)
         
         # Extract features
         features = extract_audio_features(audio, sr)
         
         # Classify reef health
-        predicted_health, confidence = classify_reef_health(features, file.filename)
+        health_status, confidence = classify_reef_health(features, file.filename)
+        confidence_percent = round(confidence * 100, 1)
         
-        # Calculate processing time
-        processing_time = time.time() - start_time
+        logger.info(f"Classification complete: {health_status} ({confidence_percent}%)")
         
         # Prepare response
-        result = {
+        processing_time = time.time() - start_time
+        
+        return {
             "success": True,
             "prediction": {
-                "health_status": predicted_health,
-                "confidence": round(confidence, 3),
-                "confidence_percentage": round(confidence * 100, 1)
+                "health_status": health_status,
+                "confidence": confidence,
+                "confidence_percentage": confidence_percent
             },
             "file_info": {
                 "filename": file.filename,
-                "size_bytes": len(audio_data),
-                "duration_seconds": round(len(audio) / sr, 2),
+                "size_bytes": len(file_contents),
+                "duration_seconds": len(audio) / sr if sr > 0 else 0,
                 "sample_rate": sr
             },
             "processing": {
                 "processing_time_seconds": round(processing_time, 2),
-                "model_used": "SurfPerch_v1.0" if model_loaded else "Feature_Analysis",
+                "model_used": "SurfPerch-v1.0",
                 "timestamp": datetime.datetime.now().isoformat()
+            },
+            "acoustic_features": {
+                "spectral_centroid_hz": float(np.mean(features.get('spectral_centroid', [0]))),
+                "spectral_bandwidth_hz": float(np.mean(features.get('spectral_bandwidth', [0]))),
+                "zero_crossing_rate": float(np.mean(features.get('zero_crossing_rate', [0])))
             }
         }
         
-        # Add acoustic features summary
-        if features:
-            result["acoustic_features"] = {
-                "spectral_centroid_hz": round(np.mean(features['spectral_centroid']), 1),
-                "spectral_bandwidth_hz": round(np.mean(features['spectral_bandwidth']), 1),
-                "zero_crossing_rate": round(np.mean(features['zero_crossing_rate']), 3)
-            }
-        
-        logger.info(f"Classification complete: {predicted_health} ({confidence:.1%})")
-        return JSONResponse(content=result)
-        
     except Exception as e:
-        logger.error(f"Error processing audio file: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error processing audio file: {str(e)}"
-        )
+        logger.error(f"Prediction error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/batch_predict")
 async def batch_predict_reef_health(files: list[UploadFile] = File(...)):
